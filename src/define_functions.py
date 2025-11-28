@@ -1,0 +1,413 @@
+###############################################################################
+
+# Import packages
+
+import os
+import sys
+import math
+import numpy as np
+import numpy.random as npr
+import numpy.linalg as npl
+import pandas as pd
+import mosek
+from mosek.fusion import *
+import gurobipy as gp
+from gurobipy import GRB
+
+np.set_printoptions(edgeitems=30, linewidth=100000, 
+    formatter=dict(float=lambda x: "% .10f" % x))
+
+# Import copy
+
+import copy
+
+###############################################################################
+
+# Set constants
+
+from define_constants import *
+
+###############################################################################
+
+def generate_random_instance(n, opts = None, seed = -99):
+
+    # If user has entered seed (not equal to -99), then set the seed
+
+    if seed != -99:
+        npr.seed(seed)
+
+    if opts == None:
+
+        opts = {
+            "q":       "submodular",   # "submodular" or "free"
+            "c":       "free",         # "zero" or "nonpositive" or "free"
+            "psd":     "full",         # "all_2x2" or "leading_3x3" or "full"
+            "rlt":     "upper_bounds", # "none" or "diag" or "upper_bounds" or "full"
+            "qp_soln": "x"             # "x" or "sqrt_diag_X" or "gurobi"
+        }
+
+    # Generate Q and c. Make sure to normalize
+
+    Q = npr.standard_normal((n, n))
+    Q = 0.5 * (Q + Q.T)
+    if opts["q"] == "submodular":
+        for i in range(0, n):
+            for j in range(0, i):
+                Q[i, j] = -np.abs(Q[i, j])
+                Q[j, i] = Q[i, j]
+    if opts["c"] == "zero":
+        c = np.zeros((n, 1))
+    elif opts["c"] == "nonpositive":
+        c = -np.abs(npr.standard_normal((n, 1)))
+    else:
+        c = npr.standard_normal((n, 1))
+    Qc = np.block([[0, c.T], [c, Q]])
+    Qc = Qc / npl.norm(Qc)
+
+    return Qc
+
+###############################################################################
+
+def generate_hopefully_nontight_instance(n, x, X):
+
+    # Generate Q,c such that (x,X) is optimal for SDP with only PSD
+    # and RLT upper bounds. Note that (x,X) must be feasible on input.
+    # Intention is that X is not rank-1
+
+    # Follows paper by Emre Alper Yildirim and co-author
+
+    M = Model('Optimality feasibility program')
+    
+    Y = M.variable('Y', Domain.greaterThan(0.0, n, n))
+    S = M.variable('S', Domain.inPSDCone(n + 1))
+
+    beta = S.slice([0, 0], [1, 1]) # Could also be S.index([0, 0])
+    h    = S.slice([1, 0], [n + 1, 1])
+    H    = S.slice([1, 1], [n + 1, n + 1])
+
+    e = np.ones((n, 1))
+    mat = x @ e.T - X
+    M.constraint(Expr.dot(mat, Y), Domain.equalsTo(0.0))
+
+    myexpr = Expr.add(beta, Expr.mul(2.0, Expr.dot(x, h)))
+    myexpr = Expr.add(myexpr, Expr.dot(X, H))
+    M.constraint(myexpr, Domain.equalsTo(0.0))
+
+    myobj = 0
+    myexpr = Expr.sub(H, Y)
+    myexpr = Expr.sub(myexpr, Expr.transpose(Y))
+    for i in range(0, n):
+        for j in range(0, i):
+            M.constraint(myexpr.index([i, j]), Domain.lessThan(0.0))
+            myobj = Expr.add(myobj, myexpr.index([i, j]))
+
+    M.objective(ObjectiveSense.Minimize, myobj)
+
+    myexpr = Expr.sum(Y)
+    for i in range(0, n + 1):
+        myexpr = Expr.add(myexpr, S.index([i, i]))
+    M.constraint(myexpr, Domain.equalsTo(1.0))
+
+    # Solve
+
+    M.solve()
+    
+    # Get return code. If we don't get 'PrimalAndDualFeasible', we balk
+
+    return_code = M.getProblemStatus(SolutionType.Default).name
+
+    if(return_code != 'PrimalAndDualFeasible'):
+        print(return_code)
+        print("Got unexpected return_code. Exiting...")
+        return -np.inf * np.ones((n + 1, n + 1))
+
+    # Get solution values
+
+    YY = np.reshape(Y.level(), (n, n))
+    HH = np.reshape(H.level(), (n, n))
+    hh = np.reshape(h.level(), (n, 1))
+
+    #  print(YY)
+    #  print(HH)
+
+    Q = 1 * (HH - YY - YY.T) # Factor 1 is by trial and error
+    #  print(Q)
+    evals, evecs = npl.eig(Q)
+    #  print(evals)
+    c = 1 * (hh + YY.T @ e) # Factor 1 is by trial and error
+    #  print(c)
+
+    Qc = np.block([[0, c.T], [c, Q]])
+
+    return Qc
+
+    return
+
+###############################################################################
+
+# Define function to solve SDP relaxation of QPB ("quadratic programming
+# over the box")
+
+def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
+
+    # Set default options
+
+    if opts == None:
+
+        opts = {
+            "q":       "submodular",   # "submodular" or "free"
+            "c":       "free",         # "zero" or "nonpositive" or "free"
+            "psd":     "full",         # "all_2x2" or "leading_3x3" or "full"
+            "rlt":     "upper_bounds", # "none" or "diag" or "upper_bounds" or "full"
+            "qp_soln": "x"             # "x" or "sqrt_diag_X" or "gurobi"
+        }
+
+    # Setup basic model
+
+    M = Model('SDP relaxation of QPB')
+
+    if opts["psd"] == "all_2x2":
+        # The following 8 lines of code setup Y but only enforce the PSD
+        # condition on the 2x2 principal submatrices. I did this as a test,
+        # but it led to gaps. I.e., it seems we need stronger conditions
+        # than just the 2x2 submatrices
+        Y = M.variable('Y', Domain.unbounded(n + 1, n + 1))
+        M.constraint(Expr.sub(Y, Expr.transpose(Y)), Domain.equalsTo(0.0))
+        for i in range(0, n + 1):
+            for j in range(0, i):
+                myexpr_row1 = Expr.hstack([Y.index([i, i]), Y.index([i, j])])
+                myexpr_row2 = Expr.hstack([Y.index([j, i]), Y.index([j, j])])
+                myexpr = Expr.vstack([myexpr_row1, myexpr_row2])
+                M.constraint(myexpr, Domain.inPSDCone(2))
+
+    elif opts["psd"] == "leading_3x3":
+        Y = M.variable('Y', Domain.unbounded(n + 1, n + 1))
+        M.constraint(Expr.sub(Y, Expr.transpose(Y)), Domain.equalsTo(0.0))
+        for i in range(0, n + 1):
+            for j in range(0, i):
+                myexpr_row1 = Expr.hstack([Y.index([0, 0]), Y.index([0, i]), Y.index([0, j])])
+                myexpr_row2 = Expr.hstack([Y.index([0, i]), Y.index([i, i]), Y.index([i, j])])
+                myexpr_row3 = Expr.hstack([Y.index([0, j]), Y.index([i, j]), Y.index([j, j])])
+                myexpr = Expr.vstack([myexpr_row1, myexpr_row2, myexpr_row3])
+                M.constraint(myexpr, Domain.inPSDCone(3))
+    else:
+        Y = M.variable('Y', Domain.inPSDCone(n + 1))
+
+    # Define Y = [Y00, x'; x, X] as usual
+    Y00 = Y.slice([0, 0], [1, 1]) # Could also be Y.index([0, 0])
+    x   = Y.slice([1, 0], [n + 1, 1])
+    X   = Y.slice([1, 1], [n + 1, n + 1])
+    
+    # Setup objective
+
+    M.objective(ObjectiveSense.Minimize, Expr.dot(Qc, Y))
+
+    # Add all the constraints
+
+    # Y00 = 1
+    M.constraint(Y00, Domain.equalsTo(1.0))
+
+    if opts["rlt"] == "full":
+
+        for i in range(0, n):
+
+            # Xii <= xi
+            myexpr = Expr.sub(x.index([i, 0]), X.index([i, i]))
+            M.constraint(myexpr, Domain.greaterThan(0.0))
+
+            for j in range(0, i):
+
+                # Xij >= 0
+                myexpr = X.index([i, j])
+                M.constraint(myexpr, Domain.greaterThan(0.0))
+
+                # Xij >= xi + xj - 1
+                myexpr = Expr.sub(X.index([i, j]), x.index([i, 0]))
+                myexpr = Expr.sub(myexpr, x.index([j, 0]))
+                myexpr = Expr.add(myexpr, 1)
+                M.constraint(myexpr, Domain.greaterThan(0.0))
+
+                # Xij <= xi
+                myexpr = Expr.sub(x.index([i, 0]), X.index([i, j]))
+                M.constraint(myexpr, Domain.greaterThan(0.0))
+
+                # Xij <= xj
+                myexpr = Expr.sub(x.index([j, 0]), X.index([i, j]))
+                M.constraint(myexpr, Domain.greaterThan(0.0))
+
+    elif opts["rlt"] == "upper_bounds":
+
+        myexpr = Expr.mul(np.ones((n, 1)), Expr.transpose(x))
+        myexpr = Expr.sub(myexpr, X)
+        cons_upper_bound = M.constraint(myexpr, Domain.greaterThan(0.0))
+
+    elif opts["rlt"] == "diag":
+
+        for i in range(0, n):
+
+            # Xii <= xi
+            myexpr = Expr.sub(x.index([i, 0]), X.index([i, i]))
+            M.constraint(myexpr, Domain.greaterThan(0.0))
+
+    else:
+
+        for i in range(0, n):
+            # 0 <= Xii <= 1
+            M.constraint(X.index([i, i]), Domain.lessThan(1.0))
+            M.constraint(X.index([i, i]), Domain.greaterThan(0.0))
+
+    # Triangle inequalities for n = 3. Currently disabled
+
+    if n == -3:
+
+        i = 0
+        j = 1
+        k = 2
+
+        myexpr = Expr.add(X.index([i, j]), X.index([i, k]))
+        myexpr = Expr.add(myexpr, X.index([j, k]))
+        myexpr = Expr.add(myexpr, 1)
+        myexpr = Expr.sub(myexpr, x.index([i, 0]))
+        myexpr = Expr.sub(myexpr, x.index([j, 0]))
+        myexpr = Expr.sub(myexpr, x.index([k, 0]))
+        M.constraint(myexpr, Domain.greaterThan(0.0))
+
+        myexpr = Expr.add(x.index([i, 0]), X.index([j, k]))
+        myexpr = Expr.sub(myexpr, X.index([i, j]))
+        myexpr = Expr.sub(myexpr, X.index([i, k]))
+        M.constraint(myexpr, Domain.greaterThan(0.0))
+
+        i = 1
+        j = 0 
+        k = 2
+
+        myexpr = Expr.add(x.index([i, 0]), X.index([j, k]))
+        myexpr = Expr.sub(myexpr, X.index([i, j]))
+        myexpr = Expr.sub(myexpr, X.index([i, k]))
+        M.constraint(myexpr, Domain.greaterThan(0.0))
+
+        i = 2
+        j = 0
+        k = 1
+
+        myexpr = Expr.add(x.index([i, 0]), X.index([j, k]))
+        myexpr = Expr.sub(myexpr, X.index([i, j]))
+        myexpr = Expr.sub(myexpr, X.index([i, k]))
+        M.constraint(myexpr, Domain.greaterThan(0.0))
+
+    # Fix specified values of Y matrix
+
+    if fixed_values is not None:
+
+        mylen = fixed_values.shape[0]
+        fix_constraints = dict(zip(range(0, mylen), mylen * [None]))
+
+        for k in range(0, mylen):
+            i = int(fixed_values[k, 0])
+            j = int(fixed_values[k, 1])
+            val = fixed_values[k, 2]
+            #  print(str(i) + ' ' + str(j) + ' ' + str(val))
+            fix_constraints[k] = M.constraint(Y.index(i, j), Domain.equalsTo(val))
+
+    # Setup Mosek options. Do I want to add tighter tolerances?
+
+    M.setLogHandler(sys.stdout)
+    M.setSolverParam("log", 0)
+    M.setSolverParam("intpntCoTolPfeas", tol_mosek)
+    M.setSolverParam("intpntCoTolDfeas", tol_mosek)
+    M.setSolverParam("intpntCoTolRelGap", tol_mosek)
+
+    # Solve
+
+    M.solve()
+    
+    # Get return code. If we don't get 'PrimalAndDualFeasible', we balk
+
+    return_code = M.getProblemStatus(SolutionType.Default).name
+
+    if(return_code != 'PrimalAndDualFeasible'):
+        print(return_code)
+        print("Got unexpected return_code. Exiting...")
+        return -np.inf, np.inf
+
+    # Get solution values
+
+    YY = np.reshape(Y.level(), (n + 1, n + 1))
+    if opts["qp_soln"] == "x":
+        yy = YY[:, [0]]
+    else:
+        yy = np.reshape(np.sqrt(np.abs(np.diagonal(YY))), (n + 1, 1)) # abs just in case something is very slightly negative
+
+    diagXX = np.diagonal(YY)
+    diagXX = diagXX[1 : (n + 1)]
+    #  tmp = np.logical_and(diagXX >= 0.05, diagXX <= 0.95)
+    #  if np.any(tmp):
+    #      Q = Qc[1 : (n + 1), 1 : (n + 1)]
+    #      tmp2 = Q[np.ix_(tmp, tmp)]
+    #      evals, evecs = npl.eig(tmp2)
+    #      if np.sort(evals)[0] < tol_general:
+    #          print('Got unexpected (something about evals of submatrix of Q). Ignoring as of 2025-05-14')
+
+    # Get primal and dual values
+
+    pval = yy.T @ Qc @ yy # Should I evaluate feasibility of yy?
+    pval = pval[0, 0]
+    dval = M.dualObjValue()
+    #  print(pval)
+    #  print(dval)
+
+    #  RLT_dual = np.reshape(RLT.dual(), (n, n))
+    #  tmp = 0.5 * RLT_dual @ np.ones((n, 1))
+    #  RLT_dual = 0.5 * (RLT_dual + RLT_dual.T)
+    #  R1 = np.hstack([np.zeros((1, 1)), tmp.T])
+    #  R2 = np.hstack([tmp, -RLT_dual])
+    #  R = np.vstack([R1, R2])
+
+    #  S = np.reshape(Y.dual(), (n + 1, n + 1))
+    #  if submodular_instance == 0:
+    #      evals, evecs = npl.eig(S)
+    #      print(np.sort(evals))
+    #  print(Qc[1:(n+1), 1:(n+1)] - S[1:(n+1), 1:(n+1)] + 0.5*(RLT_dual + RLT_dual.T))
+    #  print(S[1:(n+1), 1:(n+1)])
+
+    #  mat = Qc - S - R
+    #  print(Qc)
+    #  print(S)
+    #  print(R)
+
+    # Calculate relative gap as usual. Except that if pval and dval
+    # are really close, we purposely do not allow negative values
+
+    if np.abs(pval - dval) < tol_general:
+        rel_gap = abs(pval - dval) / np.maximum(1.0, np.abs(pval + dval) / 2.0)
+    else:
+        rel_gap = (pval - dval) / np.maximum(1.0, np.abs(pval + dval) / 2.0)
+
+    # Calculate eigenvalue ratio as usual. Could put this in its own
+    # function
+
+    evals, evecs = npl.eig(YY)
+    evals = -np.sort(-evals)
+    eval_ratio = evals[0] / np.abs(evals[1])
+
+    if opts["rlt"] == "upper_bounds":
+        ZZ = np.reshape(cons_upper_bound.dual(), (n, n))
+        SS = np.reshape(Y.dual(), (n + 1, n + 1))
+    else:
+        ZZ = []
+        SS = []
+
+    if fixed_values is not None:
+
+        mylen = fixed_values.shape[0]
+        fixed_values = np.hstack([fixed_values, -np.inf * np.ones((mylen, 1))])
+
+        for k in range(0, mylen):
+            fixed_values[k, 3] = fix_constraints[k].dual()[0]
+
+    M.dispose()
+
+    #  print(YY)
+    #  print("")
+
+    return rel_gap, eval_ratio, YY, ZZ, SS, fixed_values
