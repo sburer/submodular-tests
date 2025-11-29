@@ -44,6 +44,8 @@ def run_many_instances(n: int = 4, seeds = range(1, 11)):
 		opts = {
 			"q": "submodular",
 			"c": "free",
+			"q_density": 1.0,
+			"qc_round": 5,
 			"psd": "full",
 			"rlt": "upper_bounds",
 		}
@@ -52,28 +54,33 @@ def run_many_instances(n: int = 4, seeds = range(1, 11)):
 		progress_bar(idx-1, total, prefix=f"Running seeds {seeds}")
 		Qc, opts, x_opt = generate_random_instance(n, opts=opts, seed=seed)
 
-		rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts = build_and_solve_sdp(
-			n=n, Qc=Qc, opts=opts, fixed_values=None
+		rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts, pval_sdp, pval_xopt = build_and_solve_sdp(
+			n=n, Qc=Qc, opts=opts, fixed_values=None, x_opt=x_opt
 		)
 
 		# Extract solution approximation (first column of Y)
 		y = YY[:, [0]]
 		x_est = y[1:].flatten()
 
-		# Compute primal objective value and optimal QP objective
-		pval = float((y.T @ Qc @ y)[0, 0])
+		# Use returned objective values
+		pval = float(pval_sdp)
+		opt_val = float(pval_xopt) if pval_xopt is not None else None
+		
+		# Extract Q eigenvalues for later analysis
 		Q = Qc[1:, 1:]
-		c = Qc[1:, [0]]
-		opt_val = float(x_opt.T @ Q @ x_opt + 2.0 * c.T @ x_opt)
+		Q_evals = np.linalg.eigvalsh(Q)
 
 		results[int(seed)] = {
 			"rel_gap": rel_gap,
 			"eval_ratio": float(eval_ratio),
 			"pval": pval,
 			"opt_val": opt_val,
+			"pval_sdp": pval,
+			"pval_xopt": opt_val,
 			"x_est": x_est.tolist(),
 			"x_opt": x_opt.flatten().tolist(),
 			"opts": opts,
+			"Q_evals": Q_evals.tolist(),
 		}
 
 		# Progress update after processing the seed
@@ -84,9 +91,9 @@ def run_many_instances(n: int = 4, seeds = range(1, 11)):
 
 
 if __name__ == "__main__":
-	results = run_many_instances(n=20, seeds=range(1, 10001))
+	results = run_many_instances(n=4, seeds=range(1, 1001))
 	# Quick preview of results dict keys
-	print("Seeds processed:", sorted(results.keys()))
+	# print("Seeds processed:", sorted(results.keys()))
 
 	# Plot rel_gap vs eval_ratio
 	seeds = sorted(results.keys())
@@ -105,4 +112,36 @@ if __name__ == "__main__":
 	plt.tight_layout()
 	plt.savefig(out_path, dpi=150)
 	print(f"Saved plot to {out_path}")
+
+	# Identify seeds with large relative gaps
+	threshold = 1e-5
+	bad_seeds = [s for s in seeds if results[s]["rel_gap"] > threshold]
+	print(f"Seeds with rel_gap > {threshold:.0e}: count={len(bad_seeds)}")
+	if bad_seeds:
+		# Print detailed info for each problematic seed
+		for s in bad_seeds:
+			info = results[s]
+			print(
+				f"Seed {s}: gap={info['rel_gap']:.3e}, "
+				f"eval_ratio={info['eval_ratio']:.3e}, "
+				f"pval_sdp={info.get('pval_sdp', info['pval']):.6f}, "
+				f"pval_xopt={info.get('pval_xopt', info.get('opt_val'))}"
+			)
+			# Show eigenvalues of Q
+			Q_evals = info.get('Q_evals', [])
+			if Q_evals:
+				print(f"  Q eigenvalues: {Q_evals}")
+			# Also show key options affecting instance generation/relaxation
+			opts = info.get('opts', {})
+			print(
+				"  opts:",
+				{
+					"q": opts.get("q"),
+					"c": opts.get("c"),
+					"q_density": opts.get("q_density"),
+					"qc_round": opts.get("qc_round"),
+					"psd": opts.get("psd"),
+					"rlt": opts.get("rlt"),
+				},
+			)
 

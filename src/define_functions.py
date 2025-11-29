@@ -2,13 +2,16 @@
 
 Function summary:
     generate_random_instance(n, opts=None, seed=-99)
-        Returns normalized (n+1)x(n+1) block matrix Qc = [[0, c'; c, Q]] where
+        Returns (n+1)x(n+1) block matrix Qc = [[0, c'; c, Q]] where
         Q is symmetric (optionally forced submodular: off-diagonals <= 0) and
         c follows option "c" (zero | nonpositive | free). Options dict keys:
-            q:      structure of Q ("submodular" | "free")
-            c:      distribution for c ("zero" | "nonpositive" | "free")
-            psd:    intended later PSD enforcement style (informational here)
-            rlt:    intended later RLT family (informational here)
+            q:          structure of Q ("submodular" | "free")
+            c:          distribution for c ("zero" | "nonpositive" | "free")
+            q_density:  fraction of nonzero off-diagonal entries in Q (0.0–1.0,
+                        default 1.0 keeps full density)
+            qc_round:   round Q and c entries to 1/k grid (None or int k>=2, default None)
+            psd:        intended later PSD enforcement style (informational here)
+            rlt:        intended later RLT family (informational here)
 
     generate_hopefully_nontight_instance(n, x, X)
         Given a feasible (x, X) for the SDP relaxation, solves an auxiliary
@@ -16,19 +19,24 @@ Function summary:
         PSD + basic RLT upper bounds, aiming for non-rank-1 X. Returns Qc.
         If Mosek status not PrimalAndDualFeasible, returns -inf matrix.
 
-    build_and_solve_sdp(n=None, Qc=None, opts=None, fixed_values=None)
+    build_and_solve_sdp(n=None, Qc=None, opts=None, fixed_values=None, x_opt=None)
         Builds and solves selected SDP relaxation variant over the box using
         Fusion. PSD variants: full cone, all 2x2, or leading 3x3 minors.
         RLT variants: none | diag | upper_bounds | full. Can fix entries of
-        Y via fixed_values array [[i, j, value], ...]. Returns tuple:
-            (rel_gap, eval_ratio, YY, ZZ, SS, fixed_values)
+        Y via fixed_values array [[i, j, value], ...]. If `x_opt` (QP optimum)
+        is provided, uses it to compute `pval_xopt` and the relative gap; else
+        falls back to the SDP primal from the first column of Y. Returns tuple:
+            (rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts, pval_sdp, pval_xopt)
         where:
             rel_gap:  primal/dual relative gap (nonnegative near convergence)
             eval_ratio: leading eigenvalue / second eigenvalue of Y for rank hint
             YY:      final (n+1)x(n+1) Y matrix
             ZZ:      duals of upper-bound constraints if used else []
             SS:      duals of PSD cone (Y) else []
-            fixed_values: augmented with dual values if provided.
+            fixed_values: augmented with dual values if provided
+            opts:    options dict passed through
+            pval_sdp: objective from SDP primal (first column of Y)
+            pval_xopt: objective from QP optimum if available, else None
 
 All tolerances imported from define_constants; adjust there if needed.
 """
@@ -73,8 +81,10 @@ def generate_random_instance(n, opts = None, seed = -99):
     if opts is None:
 
         opts = {
-            "q":       "submodular",   # "submodular" or "free"
-            "c":       "free",         # "zero" or "nonpositive" or "free"
+            "q":          "submodular",   # "submodular" or "free"
+            "c":          "free",         # "zero" or "nonpositive" or "free"
+            "q_density": 1.0,             # density of off-diagonal entries
+            "qc_round": None              # round to 1/k (None=no rounding, or int k>=2)
         }
 
     else:
@@ -83,35 +93,85 @@ def generate_random_instance(n, opts = None, seed = -99):
             opts["q"] = "submodular"
         if "c" not in opts:
             opts["c"] = "free"
+        if "q_density" not in opts:
+            opts["q_density"] = 1.0
+        if "qc_round" not in opts:
+            opts["qc_round"] = None
+    # Basic validation / clipping for density
+    try:
+        density = float(opts["q_density"])
+    except Exception:
+        density = 1.0
+    density = max(0.0, min(1.0, density))
+    opts["q_density"] = density
 
-    # Generate Q and c. Make sure to normalize
+    # Generate Q and c
 
     Q = npr.standard_normal((n, n))
     Q = 0.5 * (Q + Q.T)
+    
+    # Optional rounding to 1/k grid
+    if opts["qc_round"] is not None:
+        try:
+            k = int(opts["qc_round"])
+            if k >= 2:
+                Q = np.round(Q * k) / k
+        except (TypeError, ValueError):
+            pass  # skip rounding if invalid
+    
     if opts["q"] == "submodular":
         for i in range(0, n):
             for j in range(0, i):
                 Q[i, j] = -np.abs(Q[i, j])
                 Q[j, i] = Q[i, j]
+
+    # Enforce approximate off-diagonal density via symmetric mask
+    if density < 1.0:
+        if n > 1:
+            upper_rand = npr.uniform(size=(n, n)) < density
+            upper_mask = np.triu(upper_rand, 1)
+            mask = upper_mask + upper_mask.T + np.eye(n)
+        else:
+            mask = np.eye(n)
+        Q = Q * mask
+
     if opts["c"] == "zero":
         c = np.zeros((n, 1))
     elif opts["c"] == "nonpositive":
         c = -np.abs(npr.standard_normal((n, 1)))
     else:
         c = npr.standard_normal((n, 1))
+    
+    # Apply rounding to c if specified
+    if opts["qc_round"] is not None:
+        try:
+            k = int(opts["qc_round"])
+            if k >= 2:
+                c = np.round(c * k) / k
+        except (TypeError, ValueError):
+            pass
+    
+    # Normalize consistently: scale Q and c so that ||Qc|| = 1
+    # Qc_tmp = np.block([[0, c.T], [c, Q]])
+    # scale = npl.norm(Qc_tmp)
+    # if scale > 0:
+    #     Q = Q / scale
+    #     c = c / scale
     Qc = np.block([[0, c.T], [c, Q]])
-    Qc = Qc / npl.norm(Qc)
 
     # Solve the QP to optimality with Gurobi: min x'*Q*x + 2*c'*x s.t. 0 <= x <= 1
 
     model = gp.Model("QP_over_box")
     model.setParam('OutputFlag', 0)  # Suppress output
+    model.setParam('OptimalityTol', 1e-8)  # Tighten optimality tolerance
+    model.setParam('FeasibilityTol', 1e-9)  # Tighten feasibility tolerance
+    # model.setParam('NonConvex', 2)
     
     # Create variables
     x_vars = model.addMVar(n, lb=0.0, ub=1.0, name="x")
     
     # Set objective: (1/2)*x'*Q*x + c'*x
-    model.setObjective(x_vars @ Q @ x_vars + 2 * c.flatten() @ x_vars, GRB.MINIMIZE)
+    model.setObjective(x_vars @ Q @ x_vars + 2.0 * c.flatten() @ x_vars, GRB.MINIMIZE)
     
     # Optimize
     model.optimize()
@@ -199,14 +259,12 @@ def generate_hopefully_nontight_instance(n, x, X):
 
     return Qc
 
-    return
-
 ###############################################################################
 
 # Define function to solve SDP relaxation of QPB ("quadratic programming
 # over the box")
 
-def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
+def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None, x_opt = None):
 
     # Set default options
 
@@ -410,8 +468,17 @@ def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
 
     # Get primal and dual values
 
-    pval = yy.T @ Qc @ yy # Should I evaluate feasibility of yy?
-    pval = pval[0, 0]
+    # SDP primal via first column of Y
+    pval_sdp = (yy.T @ Qc @ yy)[0, 0]
+
+    # QP primal via x_opt (if provided)
+    if x_opt is not None:
+        x_opt_ext = np.vstack([[1.0], x_opt])  # Prepend 1 for augmented form
+        pval_xopt = (x_opt_ext.T @ Qc @ x_opt_ext)[0, 0]
+        pval = pval_xopt
+    else:
+        pval_xopt = None
+        pval = pval_sdp
     dval = M.dualObjValue()
     #  print(pval)
     #  print(dval)
@@ -470,4 +537,4 @@ def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
     #  print(YY)
     #  print("")
 
-    return rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts
+    return rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts, pval_sdp, pval_xopt
