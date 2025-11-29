@@ -1,3 +1,37 @@
+"""Core construction and solution routines for submodular-like QP box SDP.
+
+Function summary:
+    generate_random_instance(n, opts=None, seed=-99)
+        Returns normalized (n+1)x(n+1) block matrix Qc = [[0, c'; c, Q]] where
+        Q is symmetric (optionally forced submodular: off-diagonals <= 0) and
+        c follows option "c" (zero | nonpositive | free). Options dict keys:
+            q:      structure of Q ("submodular" | "free")
+            c:      distribution for c ("zero" | "nonpositive" | "free")
+            psd:    intended later PSD enforcement style (informational here)
+            rlt:    intended later RLT family (informational here)
+
+    generate_hopefully_nontight_instance(n, x, X)
+        Given a feasible (x, X) for the SDP relaxation, solves an auxiliary
+        Fusion model to construct Q, c so that (x, X) is optimal using only
+        PSD + basic RLT upper bounds, aiming for non-rank-1 X. Returns Qc.
+        If Mosek status not PrimalAndDualFeasible, returns -inf matrix.
+
+    build_and_solve_sdp(n=None, Qc=None, opts=None, fixed_values=None)
+        Builds and solves selected SDP relaxation variant over the box using
+        Fusion. PSD variants: full cone, all 2x2, or leading 3x3 minors.
+        RLT variants: none | diag | upper_bounds | full. Can fix entries of
+        Y via fixed_values array [[i, j, value], ...]. Returns tuple:
+            (rel_gap, eval_ratio, YY, ZZ, SS, fixed_values)
+        where:
+            rel_gap:  primal/dual relative gap (nonnegative near convergence)
+            eval_ratio: leading eigenvalue / second eigenvalue of Y for rank hint
+            YY:      final (n+1)x(n+1) Y matrix
+            ZZ:      duals of upper-bound constraints if used else []
+            SS:      duals of PSD cone (Y) else []
+            fixed_values: augmented with dual values if provided.
+
+All tolerances imported from define_constants; adjust there if needed.
+"""
 ###############################################################################
 
 # Import packages
@@ -36,15 +70,19 @@ def generate_random_instance(n, opts = None, seed = -99):
     if seed != -99:
         npr.seed(seed)
 
-    if opts == None:
+    if opts is None:
 
         opts = {
             "q":       "submodular",   # "submodular" or "free"
             "c":       "free",         # "zero" or "nonpositive" or "free"
-            "psd":     "full",         # "all_2x2" or "leading_3x3" or "full"
-            "rlt":     "upper_bounds", # "none" or "diag" or "upper_bounds" or "full"
-            "qp_soln": "x"             # "x" or "sqrt_diag_X" or "gurobi"
         }
+
+    else:
+        # Ensure required keys present; do not add unrelated options here
+        if "q" not in opts:
+            opts["q"] = "submodular"
+        if "c" not in opts:
+            opts["c"] = "free"
 
     # Generate Q and c. Make sure to normalize
 
@@ -64,7 +102,27 @@ def generate_random_instance(n, opts = None, seed = -99):
     Qc = np.block([[0, c.T], [c, Q]])
     Qc = Qc / npl.norm(Qc)
 
-    return Qc
+    # Solve the QP to optimality with Gurobi: min x'*Q*x + 2*c'*x s.t. 0 <= x <= 1
+
+    model = gp.Model("QP_over_box")
+    model.setParam('OutputFlag', 0)  # Suppress output
+    
+    # Create variables
+    x_vars = model.addMVar(n, lb=0.0, ub=1.0, name="x")
+    
+    # Set objective: (1/2)*x'*Q*x + c'*x
+    model.setObjective(x_vars @ Q @ x_vars + 2 * c.flatten() @ x_vars, GRB.MINIMIZE)
+    
+    # Optimize
+    model.optimize()
+    
+    if model.status != GRB.OPTIMAL:
+        print(f"Warning: Gurobi did not find optimal solution, status = {model.status}")
+        x_opt = np.zeros((n, 1))
+    else:
+        x_opt = np.reshape(x_vars.X, (n, 1))
+
+    return Qc, opts, x_opt
 
 ###############################################################################
 
@@ -152,15 +210,19 @@ def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
 
     # Set default options
 
-    if opts == None:
+    if opts is None:
 
         opts = {
-            "q":       "submodular",   # "submodular" or "free"
-            "c":       "free",         # "zero" or "nonpositive" or "free"
             "psd":     "full",         # "all_2x2" or "leading_3x3" or "full"
-            "rlt":     "upper_bounds", # "none" or "diag" or "upper_bounds" or "full"
-            "qp_soln": "x"             # "x" or "sqrt_diag_X" or "gurobi"
+            "rlt":     "upper_bounds"  # "none" or "diag" or "upper_bounds" or "full"
         }
+
+    else:
+        # Ensure required keys present; do not add unrelated options here
+        if "psd" not in opts:
+            opts["psd"] = "full"
+        if "rlt" not in opts:
+            opts["rlt"] = "upper_bounds"
 
     # Setup basic model
 
@@ -333,10 +395,8 @@ def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
     # Get solution values
 
     YY = np.reshape(Y.level(), (n + 1, n + 1))
-    if opts["qp_soln"] == "x":
-        yy = YY[:, [0]]
-    else:
-        yy = np.reshape(np.sqrt(np.abs(np.diagonal(YY))), (n + 1, 1)) # abs just in case something is very slightly negative
+    # Extract solution approximation from first column of Y
+    yy = YY[:, [0]]
 
     diagXX = np.diagonal(YY)
     diagXX = diagXX[1 : (n + 1)]
@@ -410,4 +470,4 @@ def build_and_solve_sdp(n = None, Qc = None, opts = None, fixed_values = None):
     #  print(YY)
     #  print("")
 
-    return rel_gap, eval_ratio, YY, ZZ, SS, fixed_values
+    return rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts
