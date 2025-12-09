@@ -2,17 +2,19 @@
 
 This script:
   1. Generates a random (Q,c) instance via `generate_random_instance`.
-  2. Builds and solves the selected SDP relaxation using `build_and_solve_sdp`.
-  3. Prints key diagnostics: relative gap, eigenvalue ratio, objective values, and
-	 extracted solution vector approximation.
+  2. Solves the QP to optimality with Gurobi.
+  3. Builds and solves the SDP relaxation using `build_and_solve_sdp`.
+  4. Computes the primal-dual relative gap for each instance.
+  5. Creates a density plot of relative gaps on log scale.
+  6. Reports instances with gaps exceeding the threshold.
 
-Requires Mosek (and optionally Gurobi if using that option) to be installed and
-licensed in the current Python environment.
+Requires Mosek and Gurobi to be installed and licensed.
 """
 
 import os
 import sys
 import numpy as np
+import numpy.random as npr
 
 # Ensure we can import source modules (add `src` folder to path)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,17 +23,19 @@ if SRC_PATH not in sys.path:
 	sys.path.append(SRC_PATH)
 
 from define_functions import generate_random_instance, build_and_solve_sdp
+from define_constants import tol_rel_gap
 import matplotlib.pyplot as plt
-import time
 
-def run_many_instances(n: int = 4, seeds = range(1, 11)):
-	"""Run multiple random instances and return a results dictionary.
+def run_many_instances(n_lower: int = 4, n_upper: int = 10, seeds = range(1, 1001)):
+	"""Run multiple random instances with varying sizes and return results dict.
 
-	Each seed generates a new (Q,c), solves SDP, and solves QP to optimality.
-	Returns a dict keyed by seed with metrics and solutions.
+	For each seed, randomly samples problem size n from [n_lower, n_upper] (inclusive).
+	Solves QP to optimality with Gurobi and builds/solves SDP relaxation.
+	Returns a dict keyed by seed with metrics and the size used for that instance.
 	"""
 
 	results = {}
+	config = {"n_lower": n_lower, "n_upper": n_upper}
 
 	def progress_bar(iteration, total, prefix="Progress", length=40):
 		pct = (iteration / total)
@@ -41,107 +45,76 @@ def run_many_instances(n: int = 4, seeds = range(1, 11)):
 
 	total = len(list(seeds))
 	for idx, seed in enumerate(seeds, start=1):
-		opts = {
-			"q": "submodular",
-			"c": "free",
-			"q_density": 1.0,
-			"qc_round": 5,
-			"psd": "full",
-			"rlt": "upper_bounds",
-		}
-
 		# Update progress before each run
 		progress_bar(idx-1, total, prefix=f"Running seeds {seeds}")
-		Qc, opts, x_opt = generate_random_instance(n, opts=opts, seed=seed)
+		# Set seed BEFORE generating any randomness
+		npr.seed(seed)
+		# Randomly sample problem size
+		n = npr.randint(n_lower, n_upper + 1)
+		Qc, x_opt = generate_random_instance(n, seed=seed)
 
-		rel_gap, eval_ratio, YY, ZZ, SS, fixed_values, opts, pval_sdp, pval_xopt = build_and_solve_sdp(
-			n=n, Qc=Qc, opts=opts, fixed_values=None, x_opt=x_opt
+		rel_gap, = build_and_solve_sdp(
+			n=n, Qc=Qc, x_opt=x_opt
 		)
-
-		# Extract solution approximation (first column of Y)
-		y = YY[:, [0]]
-		x_est = y[1:].flatten()
-
-		# Use returned objective values
-		pval = float(pval_sdp)
-		opt_val = float(pval_xopt) if pval_xopt is not None else None
-		
-		# Extract Q eigenvalues for later analysis
-		Q = Qc[1:, 1:]
-		Q_evals = np.linalg.eigvalsh(Q)
 
 		results[int(seed)] = {
 			"rel_gap": rel_gap,
-			"eval_ratio": float(eval_ratio),
-			"pval": pval,
-			"opt_val": opt_val,
-			"pval_sdp": pval,
-			"pval_xopt": opt_val,
-			"x_est": x_est.tolist(),
-			"x_opt": x_opt.flatten().tolist(),
-			"opts": opts,
-			"Q_evals": Q_evals.tolist(),
+			"n": n,
 		}
 
 		# Progress update after processing the seed
 		progress_bar(idx, total, prefix=f"Running seeds {seeds}")
 
 	print("\nCompleted runs.")
-	return results
+	return results, config
 
 
 if __name__ == "__main__":
-	results = run_many_instances(n=4, seeds=range(1, 1001))
+	results, config = run_many_instances(n_lower=4, n_upper=20, seeds=range(1, 1001))
+	n_lower, n_upper = config["n_lower"], config["n_upper"]
 	# Quick preview of results dict keys
 	# print("Seeds processed:", sorted(results.keys()))
 
-	# Plot rel_gap vs eval_ratio
+	# Plot histogram of relative gaps
 	seeds = sorted(results.keys())
 	rel_gaps = [results[s]["rel_gap"] for s in seeds]
-	eval_ratios = [results[s]["eval_ratio"] for s in seeds]
+	# Filter to finite values
+	rel_gaps_finite = [r for r in rel_gaps if np.isfinite(r)]
 
-	plt.figure(figsize=(6,4))
-	plt.scatter(eval_ratios, rel_gaps, c='tab:blue', alpha=0.7)
-	plt.xlabel("Eigenvalue Ratio (lambda1 / |lambda2|)")
-	plt.ylabel("Relative Gap")
-	plt.xscale('log')
-	plt.yscale('log')
-	plt.title(f"Relative Gap vs Eigenvalue Ratio (n={4}, seeds {seeds[0]}..{seeds[-1]})")
-	plt.grid(True, linestyle='--', alpha=0.4)
-	out_path = os.path.join(PROJECT_ROOT, "results_rel_gap_vs_eval_ratio.png")
+	plt.figure(figsize=(8,5))
+	if len(rel_gaps_finite) > 0:
+		# Create density plot using kernel density estimation
+		from scipy import stats
+		# Filter out zeros for log scale
+		rel_gaps_positive = [r for r in rel_gaps_finite if r > 0]
+		if len(rel_gaps_positive) > 1:
+			# Use log-transformed data for KDE, then transform back
+			log_gaps = np.log10(rel_gaps_positive)
+			kde = stats.gaussian_kde(log_gaps)
+			x_range = np.linspace(min(log_gaps), max(log_gaps), 500)
+			density = kde(x_range)
+			x_plot = 10**x_range
+			plt.plot(x_plot, density, color='tab:blue', linewidth=2)
+			plt.fill_between(x_plot, density, alpha=0.3, color='tab:blue')
+			plt.xlabel("Relative Gap")
+			plt.ylabel("Density")
+			plt.xscale('log')
+			plt.title(f"Distribution of Relative Gaps (n sampled from [{n_lower},{n_upper}], seeds {seeds[0]}..{seeds[-1]})")
+			plt.grid(True, linestyle='--', alpha=0.4, axis='y')
+		else:
+			plt.text(0.5, 0.5, "Insufficient positive data for density plot", ha='center', va='center')
+			plt.title(f"Distribution of Relative Gaps (n sampled from [{n_lower},{n_upper}], seeds {seeds[0]}..{seeds[-1]}) - Insufficient Data")
+	else:
+		plt.text(0.5, 0.5, "No finite data to plot", ha='center', va='center')
+		plt.title(f"Distribution of Relative Gaps (n sampled from [{n_lower},{n_upper}], seeds {seeds[0]}..{seeds[-1]}) - No Data")
+	out_path = os.path.join(PROJECT_ROOT, "results_rel_gap_distribution.png")
 	plt.tight_layout()
 	plt.savefig(out_path, dpi=150)
 	print(f"Saved plot to {out_path}")
 
 	# Identify seeds with large relative gaps
-	threshold = 1e-5
-	bad_seeds = [s for s in seeds if results[s]["rel_gap"] > threshold]
-	print(f"Seeds with rel_gap > {threshold:.0e}: count={len(bad_seeds)}")
-	if bad_seeds:
-		# Print detailed info for each problematic seed
-		for s in bad_seeds:
-			info = results[s]
-			print(
-				f"Seed {s}: gap={info['rel_gap']:.3e}, "
-				f"eval_ratio={info['eval_ratio']:.3e}, "
-				f"pval_sdp={info.get('pval_sdp', info['pval']):.6f}, "
-				f"pval_xopt={info.get('pval_xopt', info.get('opt_val'))}"
-			)
-			# Show eigenvalues of Q
-			Q_evals = info.get('Q_evals', [])
-			if Q_evals:
-				print(f"  Q eigenvalues: {Q_evals}")
-			# Also show key options affecting instance generation/relaxation
-			opts = info.get('opts', {})
-			print(
-				"  opts:",
-				{
-					"q": opts.get("q"),
-					"c": opts.get("c"),
-					"q_density": opts.get("q_density"),
-					"qc_round": opts.get("qc_round"),
-					"psd": opts.get("psd"),
-					"rlt": opts.get("rlt"),
-				},
-			)
+	threshold = tol_rel_gap 
+	for s in seeds:
+		if results[s]["rel_gap"] > threshold:
+			print(f"Seed {s}: gap={results[s]['rel_gap']:.3e}, n={results[s]['n']}")
 
