@@ -26,12 +26,16 @@ from define_functions import generate_random_instance, build_and_solve_sdp
 from define_constants import tol_rel_gap
 import matplotlib.pyplot as plt
 
-def run_many_instances(n_lower: int = 4, n_upper: int = 10, seeds = range(1, 1001)):
+def run_many_instances(n_lower: int = 4, n_upper: int = 20, seeds = range(1, 1001), reproducible: bool = True):
 	"""Run multiple random instances with varying sizes and return results dict.
 
 	For each seed, randomly samples problem size n from [n_lower, n_upper] (inclusive).
 	Solves QP to optimality with Gurobi and builds/solves SDP relaxation.
 	Returns a dict keyed by seed with metrics and the size used for that instance.
+
+	Args:
+	    reproducible: If True (default), uses the seed value for reproducibility.
+	                  If False, runs non-deterministically with different randomness each time.
 	"""
 
 	results = {}
@@ -47,13 +51,14 @@ def run_many_instances(n_lower: int = 4, n_upper: int = 10, seeds = range(1, 100
 	for idx, seed in enumerate(seeds, start=1):
 		# Update progress before each run
 		progress_bar(idx-1, total, prefix=f"Running seeds {seeds}")
-		# Set seed BEFORE generating any randomness
-		npr.seed(seed)
+		# Set seed BEFORE generating any randomness (if reproducible mode enabled)
+		if reproducible:
+			npr.seed(seed)
 		# Randomly sample problem size
 		n = npr.randint(n_lower, n_upper + 1)
-		Qc, x_opt = generate_random_instance(n, seed=seed)
+		Qc, x_opt = generate_random_instance(n, seed=seed if reproducible else -99)
 
-		rel_gap, = build_and_solve_sdp(
+		rel_gap = build_and_solve_sdp(
 			n=n, Qc=Qc, x_opt=x_opt
 		)
 
@@ -107,7 +112,7 @@ if __name__ == "__main__":
 	else:
 		plt.text(0.5, 0.5, "No finite data to plot", ha='center', va='center')
 		plt.title(f"Distribution of Relative Gaps (n sampled from [{n_lower},{n_upper}], seeds {seeds[0]}..{seeds[-1]}) - No Data")
-	out_path = os.path.join(PROJECT_ROOT, "results_rel_gap_distribution.png")
+	out_path = os.path.join(PROJECT_ROOT, "results/rel_gap_distribution.png")
 	plt.tight_layout()
 	plt.savefig(out_path, dpi=150)
 	print(f"Saved plot to {out_path}")

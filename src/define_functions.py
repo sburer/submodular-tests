@@ -1,4 +1,4 @@
-"""Core construction and solution routines for submodular-like QP box SDP.
+"""Core construction and solution routines for submodular box QP and associated SDP.
 
 Function summary:
     generate_random_instance(n, seed=-99)
@@ -9,10 +9,10 @@ Function summary:
     build_and_solve_sdp(n=None, Qc=None, x_opt=None)
         Builds and solves the SDP relaxation with full PSD cone and upper_bounds
         RLT constraints (Xij <= xi for all i,j). x_opt is the QP optimum and is
-        used to compute the relative gap. Returns tuple:
-            (rel_gap,)
+        used to compute the relative gap. Returns:
+            rel_gap
         where:
-            rel_gap: primal/dual relative gap (nonnegative near convergence)
+            rel_gap: primal/dual relative gap (nonnegative)
 
 All tolerances imported from define_constants; adjust there if needed.
 """
@@ -136,9 +136,6 @@ def build_and_solve_sdp(n = None, Qc = None, x_opt = None):
         print("Got unexpected return_code. Exiting...")
         return -np.inf, np.inf
 
-    # Get solution values
-    # (not using SDP solution approximation for gap calculation)
-
     # Get primal and dual values
 
     # Compute objective from QP optimum (x_opt)
@@ -154,4 +151,4 @@ def build_and_solve_sdp(n = None, Qc = None, x_opt = None):
 
     M.dispose()
 
-    return (rel_gap,)
+    return rel_gap
