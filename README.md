@@ -130,3 +130,7 @@ where $p^*$ is the optimal value of the QP and $d^*$ the dual objective of the
 SDP relaxation. The dual value is used because weak duality makes it a rigorous
 lower bound, so the relative gap is nonnegative and vanishes exactly when the
 relaxation is tight.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
