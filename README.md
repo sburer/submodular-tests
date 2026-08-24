@@ -1,180 +1,132 @@
 # Submodular Box QP and SDP Relaxation
 
-This project solves random instances of quadratic programming (QP) problems over the box $[0,1]^n$ and computes SDP relaxations to analyze the primal-dual gap.
+Code accompanying *On the Semidefinite Representability of Continuous Quadratic
+Submodular Minimization With Applications to Pricing and Moment Problems*.
 
-## Overview
+The paper studies quadratic submodular minimization over the box $[0,1]^n$
+(QSMB) and a polynomially sized SDP relaxation of it, proves that the
+relaxation is tight for $n \le 3$, and exhibits an explicit $n = 4$ instance on
+which it is not. This repository reproduces every computational claim the paper
+makes.
 
-The main script `scripts/run_tests.py` performs the following:
+## What reproduces what
 
-1. **Generates random instances**: Creates random (Q, c) pairs with submodular structure
-2. **Solves QP to optimality**: Uses Gurobi to find the exact optimal solution
-3. **Solves SDP relaxation**: Builds and solves the SDP relaxation using Mosek
-4. **Computes relative gaps**: Calculates primal-dual relative gaps for each instance
-5. **Visualizes results**: Creates a log-scale density plot of gap distribution
-6. **Reports outliers**: Prints instances with gaps exceeding the tolerance threshold
+Each row is an artifact printed in the paper, the script that produces it, and
+what that script needs. Run everything from the `scripts/` directory.
+
+| Paper artifact | Script | Needs |
+| --- | --- | --- |
+| Figure 1 — nested relaxations, submodular boundary | `python tightness_figure.py --outbase ../results/tightness_projection` | Mosek |
+| Figure 2 — relative-gap distribution, 1,000 instances | `python run_tests.py` | Gurobi, Mosek |
+| Section 5.1 — 34,000 fixed-dimension instances, rank-one finding | `python run_structure_search.py` | Gurobi, Mosek |
+| Tables 2 and 3 — three-product pricing | `python run_pricing.py` | Mosek (Gurobi optional) |
+| Table 4 — stratified sampling allocation | `python run_allocation.py` | Mosek |
+| Figure 3 — worst-case subquantile *(see Known issues)* | `python run_laplacian.py --subquantile` | Mosek |
+| Table 5 — Laplacian energy percentage gap *(see Known issues)* | `python run_laplacian.py --energy` | Mosek |
+| Example 4, Proposition 12, Table 6 — the counterexample | `python verify_counterexample.py` | Mosek |
+| — its exact half alone, no solver | `python verify_counterexample.py --exact` | none |
+| Figure 4 — the counterexample projected | `python gap_figure2.py --outbase ../results/gap_projection2` | cvxpy + Clarabel |
+| Conclusions — sparsity remark | `python run_sparsity.py` | Gurobi, Mosek |
+
+`verify_counterexample.py --exact` is worth singling out: the paper's central
+new claim, that the relaxation is not tight for $n \ge 4$, is checked in exact
+rational arithmetic with no solver and no floating point. It enumerates all
+$3^4$ KKT active-set patterns over $\mathbb{Q}$, confirms that the four
+singular reduced Hessians have inconsistent stationarity systems, and verifies
+the feasible point of Proposition 12 through its five leading principal minors.
+
+## Reproducibility
+
+Every randomized experiment is seeded and deterministic:
+
+- `run_tests.py` — seeds 1..1000, one instance per seed
+- `run_structure_search.py` — seeds 1..N at each dimension $n \in \{4,5,6,7\}$
+- `run_sparsity.py` — seeded per instance
+- `run_laplacian.py --energy` — `numpy.random.default_rng([seed, n, graph])`,
+  default `--seed 1`
+- `tightness_figure.py`, `gap_figure2.py`, `run_pricing.py`,
+  `run_allocation.py`, `verify_counterexample.py` — no randomness at all
+
+## Known issues
+
+**Figure 3 does not currently reproduce.** `run_laplacian.py --subquantile`
+returns a worst-case subquantile of 0 for both ambiguity sets at every
+$\alpha$, rather than the two crossing curves the paper plots. The reason
+appears to be structural rather than a coding error. The Laplacian satisfies
+$Le = 0$, so constant vectors have zero energy, and with $\mu,\Sigma$ set to
+the first two moments of the independent uniform vector on $[0,1]^n$ both
+relaxed ambiguity sets admit a distribution whose energy vanishes identically:
+
+- under $\mathcal{Q}$, the point mass at $\xi = e/2$, since
+  $\Sigma - \tfrac14 ee^T = \tfrac1{12} I \succeq 0$;
+- under $\mathcal{P}$, the perfectly correlated $\xi = t\,e$ with
+  $\mathbb{E}[t] = 1/2$ and $\mathbb{E}[t^2] = 1/3$, which meets the diagonal
+  moments exactly and has $\mathbb{E}[\xi_i \xi_j] = 1/3 \ge 1/4 = \Sigma_{ij}$.
+
+Both are excluded by $\mathcal{R}$, which fixes $\mathbb{E}[\xi\xi^T] = \Sigma$
+exactly, but readmitted by the relaxations. Either the figure used different
+data than the text describes, or it plots a different quantity. Unresolved.
+
+**Table 5 reproduces qualitatively, not numerically.** The sampling scheme
+behind the published table was not recorded, so this repository fixes its own:
+$\mu_i \sim U(0,1)$ and $\sigma_i = u_i \sqrt{\mu_i(1-\mu_i)}$ with
+$u_i \sim U(0,1)$, which satisfies Lemma 3. With `--seed 1`:
+
+|  | path | star | complete |
+| --- | --- | --- | --- |
+| $n = 2$ | 0.000 (0.000) | 0.000 (0.000) | 0.000 (0.000) |
+| $n = 10$ | 0.599 (0.993) | 1.381 (2.508) | 1.771 (1.176) |
+| $n = 20$ | 0.619 (0.595) | 1.752 (2.282) | 2.162 (0.757) |
+| $n = 50$ | 0.649 (0.339) | 2.010 (2.198) | 2.328 (0.503) |
+
+Both claims the text draws from the table hold: the gap grows with $n$, and it
+is largest for the complete graph, then the star, then the path. The complete
+graph agrees closely with the published numbers; the path and star run higher,
+which is what one would expect from a different marginal sampling scheme, since
+those graphs have far fewer edges to average over.
 
 ## Requirements
 
-- Python 3.7+
-- [Gurobi](https://www.gurobi.com/) (with valid license)
-- [Mosek](https://www.mosek.com/) (with valid license)
-- NumPy
-- SciPy
-- Matplotlib
+- Python 3.9+, NumPy, SciPy, Matplotlib
+- [Mosek](https://www.mosek.com/) with a licence — all SDPs except `gap_figure2.py`
+- [Gurobi](https://www.gurobi.com/) with a licence — global solution of the
+  nonconvex box QPs
+- [cvxpy](https://www.cvxpy.org/) with Clarabel — `gap_figure2.py` only
 
-## Project Structure
+Nothing beyond NumPy is needed for `verify_counterexample.py --exact`.
+
+## Project structure
 
 ```
 src/
-  define_constants.py     # Problem tolerances and constants
-  define_functions.py     # Core functions for QP and SDP solving
-  analysis_functions.py   # Extended solve (returns Y; selectable RLT bounds) + rank/active-set analysis
+  define_constants.py       tolerances
+  define_functions.py       instance generation, QP and SDP solves
+  analysis_functions.py     extended solve returning Y; rank and active-set analysis
 scripts/
-  run_tests.py            # Relative-gap distribution over mixed dimensions
-  run_structure_search.py # Fixed-dimension tightness search + rank/active-inequality structure
-  run_sparsity.py         # Sparse-Q study: dropping RLT bounds on zero-Q_ij pairs
-  tightness_figure.py     # Geometric figure: nested CP / full-RLT / upper-only bodies (self-contained)
-  gap_figure2.py          # Same projection for the second n=4 counterexample (TRI does not close it)
+  run_tests.py              Figure 2
+  run_structure_search.py   Section 5.1 fixed-dimension search
+  run_sparsity.py           Conclusions sparsity remark
+  run_pricing.py            Tables 2 and 3
+  run_allocation.py         Table 4
+  run_laplacian.py          Figure 3 and Table 5
+  verify_counterexample.py  Example 4, Proposition 12, Table 6
+  counterexample_numerics.py  the Mosek half of the above
+  tightness_figure.py       Figure 1
+  gap_figure2.py            Figure 4
 results/
-  rel_gap_distribution.png  # Output plot (generated on run)
+  tightness_projection.pdf/.png
+  rel_gap_distribution.png
+  bounds1.png
+  gap_projection2.pdf/.png
 ```
 
-## Experiments reported in the paper
+## The relative gap
 
-- `scripts/run_tests.py` — distribution of relative gaps over random instances
-  with `n` sampled from a range (Section 5.1, Figure).
-- `scripts/run_structure_search.py` — systematic search at each fixed dimension
-  `n in {4,5,6,7}` for counterexamples to tightness, together with the rank of
-  the optimal SDP solution and its active-inequality pattern (Section 5.1,
-  Table and structural discussion).
-- `scripts/run_sparsity.py` — whether the RLT upper bounds on zero-`Q_ij` pairs
-  can be dropped without loosening the relaxation, for random sparse and
-  block-separable `Q` (Conclusions).
-- `scripts/tightness_figure.py` — self-contained, deterministic script that
-  builds the geometric illustration (Section 2, Figure 1): three nested
-  relaxations of the box (exact hull, full RLT, upper-bounds-only) projected to
-  2-D, showing coincidence on the submodular boundary. Writes a `.pdf`/`.png`
-  via `--outbase`. The "instance" is the fixed configuration `x_i = X_ii = 5/8`
-  (documented in the script); no randomness.
-- `scripts/gap_figure2.py` — the same projection for the second n = 4
-  counterexample (`Q = [[8,-14,0,0],[-14,25,-25,0],[0,-25,25,-14],[0,0,-14,8]]`,
-  `c = (12,29,0,0)`), found by adversarial search. Here the triangle
-  inequalities remove 99.9% of the gap but not all of it, so the figure carries
-  an inset magnifying the origin about 1000x to show the surviving
-  `-1.43e-4`. Same dependencies and `--outbase` convention.
+Several scripts report
 
-Run any of them from the `scripts/` directory, e.g. `python run_structure_search.py`.
+$$\text{rel gap} = \frac{p^* - d^*}{\max(1, |p^* + d^*|/2)}$$
 
-## Usage
-
-### Basic Usage (Reproducible)
-
-Run with default settings (reproducible results):
-
-```bash
-cd scripts
-python run_tests.py
-```
-
-This runs 1000 seeds (1-1000) with problem sizes sampled from [4, 20].
-
-### Non-Reproducible Runs
-
-To run with different random instances each time (non-deterministic):
-
-```python
-from run_tests import run_many_instances
-
-results, config = run_many_instances(reproducible=False)
-```
-
-### Custom Configuration
-
-Adjust problem parameters:
-
-```python
-from run_tests import run_many_instances
-
-results, config = run_many_instances(
-    n_lower=5,           # Minimum problem size
-    n_upper=25,          # Maximum problem size
-    seeds=range(1, 101), # Run 100 instances
-    reproducible=True    # Use seeded randomness
-)
-```
-
-## Example Output
-
-### Command-Line Output
-
-When you run the script, you'll see progress tracking and final results:
-
-```
-Running seeds range(1, 101): |########################################| 100/100 (100.0%)
-Completed runs.
-Saved plot to /path/to/project/results/rel_gap_distribution.png
-```
-
-### Output Image
-
-The script generates `results/rel_gap_distribution.png`, a density plot showing:
-
-- **X-axis**: Relative gap (log scale)
-- **Y-axis**: Density (kernel density estimation)
-- **Title**: Shows the range of problem sizes (n) and seed range tested
-
-Example plot characteristics:
-- Most gaps cluster near zero (good SDP bounds)
-- Log scale reveals the full distribution from very small to moderate gaps
-- Blue shaded area under the density curve
-
-## Key Functions
-
-### `run_many_instances(n_lower, n_upper, seeds, reproducible)`
-
-Main entry point for running the experiment.
-
-**Parameters:**
-- `n_lower` (int): Minimum problem size (default: 4)
-- `n_upper` (int): Maximum problem size (default: 20)
-- `seeds` (iterable): Seed values to iterate (default: range(1, 1001))
-- `reproducible` (bool): Use seeded randomness (default: True)
-
-**Returns:**
-- `results` (dict): Keyed by seed with 'rel_gap' and 'n' values
-- `config` (dict): Configuration used (n_lower, n_upper)
-
-### `generate_random_instance(n, seed)`
-
-Generates a random QP instance with submodular structure.
-
-**Returns:**
-- `Qc`: (n+1)×(n+1) augmented matrix [[0, c'], [c, Q]]
-- `x_opt`: Optimal solution from Gurobi
-
-### `build_and_solve_sdp(n, Qc, x_opt)`
-
-Builds and solves the SDP relaxation.
-
-**Returns:**
-- `rel_gap`: Primal-dual relative gap
-
-## Understanding the Gap
-
-The **relative gap** measures how tight the SDP bound is:
-
-$$\text{rel\_gap} = \frac{p_{\text{val}} - d_{\text{val}}}{\max(1, |p_{\text{val}} + d_{\text{val}}|/2)}$$
-
-where:
-- $p_{\text{val}}$ = objective value at optimal QP solution
-- $d_{\text{val}}$ = dual objective value of SDP relaxation
-
-A gap close to 0 means the SDP provides a very tight bound; a larger gap indicates the relaxation is looser.
-
-## Configuration
-
-Modify [src/define_constants.py](src/define_constants.py) to adjust solver tolerances and gap thresholds.
-
-## License
-
-See LICENSE file (if applicable).
+where $p^*$ is the optimal value of the QP and $d^*$ the dual objective of the
+SDP relaxation. The dual value is used because weak duality makes it a rigorous
+lower bound, so the relative gap is nonnegative and vanishes exactly when the
+relaxation is tight.
