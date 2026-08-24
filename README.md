@@ -26,13 +26,44 @@ The main script `scripts/run_tests.py` performs the following:
 
 ```
 src/
-  define_constants.py    # Problem tolerances and constants
-  define_functions.py    # Core functions for QP and SDP solving
+  define_constants.py     # Problem tolerances and constants
+  define_functions.py     # Core functions for QP and SDP solving
+  analysis_functions.py   # Extended solve (returns Y; selectable RLT bounds) + rank/active-set analysis
 scripts/
-  run_tests.py          # Main script for running experiments
+  run_tests.py            # Relative-gap distribution over mixed dimensions
+  run_structure_search.py # Fixed-dimension tightness search + rank/active-inequality structure
+  run_sparsity.py         # Sparse-Q study: dropping RLT bounds on zero-Q_ij pairs
+  tightness_figure.py     # Geometric figure: nested CP / full-RLT / upper-only bodies (self-contained)
+  gap_figure2.py          # Same projection for the second n=4 counterexample (TRI does not close it)
 results/
   rel_gap_distribution.png  # Output plot (generated on run)
 ```
+
+## Experiments reported in the paper
+
+- `scripts/run_tests.py` — distribution of relative gaps over random instances
+  with `n` sampled from a range (Section 5.1, Figure).
+- `scripts/run_structure_search.py` — systematic search at each fixed dimension
+  `n in {4,5,6,7}` for counterexamples to tightness, together with the rank of
+  the optimal SDP solution and its active-inequality pattern (Section 5.1,
+  Table and structural discussion).
+- `scripts/run_sparsity.py` — whether the RLT upper bounds on zero-`Q_ij` pairs
+  can be dropped without loosening the relaxation, for random sparse and
+  block-separable `Q` (Conclusions).
+- `scripts/tightness_figure.py` — self-contained, deterministic script that
+  builds the geometric illustration (Section 2, Figure 1): three nested
+  relaxations of the box (exact hull, full RLT, upper-bounds-only) projected to
+  2-D, showing coincidence on the submodular boundary. Writes a `.pdf`/`.png`
+  via `--outbase`. The "instance" is the fixed configuration `x_i = X_ii = 5/8`
+  (documented in the script); no randomness.
+- `scripts/gap_figure2.py` — the same projection for the second n = 4
+  counterexample (`Q = [[8,-14,0,0],[-14,25,-25,0],[0,-25,25,-14],[0,0,-14,8]]`,
+  `c = (12,29,0,0)`), found by adversarial search. Here the triangle
+  inequalities remove 99.9% of the gap but not all of it, so the figure carries
+  an inset magnifying the origin about 1000x to show the surviving
+  `-1.43e-4`. Same dependencies and `--outbase` convention.
+
+Run any of them from the `scripts/` directory, e.g. `python run_structure_search.py`.
 
 ## Usage
 
