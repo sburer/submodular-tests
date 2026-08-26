@@ -1,9 +1,8 @@
-"""Reproduce the Laplacian experiments from Karthik's inputs.
+"""Run the grounded-path subquantile and Laplacian-energy experiments.
 
-The archived MATLAB driver calls the two moment-dual SDPs with uniform
-moments, but its path matrix has diagonal 2 at both endpoints. This is the
-standard path Laplacian plus unit boundary penalties (a grounded path), not
-the singular graph Laplacian described in the paper.
+The subquantile experiment uses independent-uniform moments and a path matrix
+with diagonal 2 at both endpoints. This is the standard path Laplacian plus
+unit boundary penalties (a grounded path), not the singular graph Laplacian.
 
 Run from this directory:
 
@@ -134,15 +133,15 @@ def energy_bivariate(kind: str, n: int, mu: np.ndarray, sigma: np.ndarray) -> fl
 
 
 def grounded_path_laplacian(n: int) -> np.ndarray:
-    """Return the matrix constructed as ``L`` in cmmmoments.m for p == 1."""
+    """Return the path Laplacian with unit penalties at both endpoints."""
     L = graph_laplacian("path", n)
     L[0, 0] += 1.0
     L[-1, -1] += 1.0
     return L
 
 
-def historical_inputs(n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return the MATLAB path matrix and the uniform first two moments."""
+def subquantile_inputs(n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the grounded path matrix and independent-uniform moments."""
     L = grounded_path_laplacian(n)
     mu = np.full(n, 0.5)
     Sigma = 0.25 * np.ones((n, n)) + (1.0 / 12.0) * np.eye(n)
@@ -150,7 +149,7 @@ def historical_inputs(n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def run(alphas: list[float], n: int) -> list[dict]:
-    L, mu, Sigma = historical_inputs(n)
+    L, mu, Sigma = subquantile_inputs(n)
     rows = []
     for alpha in alphas:
         for ambiguity in ("P", "Q"):

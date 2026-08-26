@@ -21,7 +21,7 @@ what that script needs. Run everything from the `scripts/` directory.
 | Section 5.1 — 34,000 fixed-dimension instances, rank-one finding | `python run_structure_search.py` | Gurobi, Mosek |
 | Tables 2 and 3 — three-product pricing | `python run_pricing.py` | Mosek (Gurobi optional) |
 | Table 4 — stratified sampling allocation | `python run_allocation.py` | Mosek |
-| Figure 3 — historical MATLAB grounded-path reproduction | `python run_laplacian.py` | Mosek |
+| Figure 3 — grounded-path subquantile bounds | `python run_laplacian.py` | Mosek |
 | Table 5 — Laplacian energy percentage gap *(see Known issues)* | `python run_laplacian.py --energy` | Mosek; writes `results/table5.csv` and `results/table5_raw.csv` |
 | Example 4, Proposition 12, Table 6 — the counterexample | `python verify_counterexample.py` | Mosek |
 | — its exact half alone, no solver | `python verify_counterexample.py --exact` | none |
@@ -49,20 +49,16 @@ Every randomized experiment is seeded and deterministic:
 
 ## Known issues
 
-**Figure 3 is reproducible with its supplied MATLAB inputs.** Run
-`python run_laplacian.py` to use the matrix and
-moments constructed by Karthik's `cmmmoments.m`. The moments are the stated
-independent-uniform moments, but the path matrix has diagonal 2 at both
-endpoints. Equivalently, it is the standard path Laplacian plus unit penalties
-on the first and last coordinates:
+**Figure 3 uses a grounded-path formulation.** Run `python run_laplacian.py`.
+The moments are the independent-uniform moments, and the path matrix has
+diagonal 2 at both endpoints. Equivalently, it is the standard path Laplacian
+plus unit penalties on the first and last coordinates:
 
 `xi' L_code xi = sum_edges (xi_i-xi_j)^2 + xi_1^2 + xi_n^2`.
 
-This grounded path explains the archived intercepts P = 2/3 and Q = 1/2 and
-the crossing at alpha = 0.2. It is not the standard graph Laplacian currently
-described in the paper; the promoted script records the historical computation
-explicitly rather than silently presenting the degenerate standard-Laplacian
-result.
+This grounded path gives intercepts P = 2/3 and Q = 1/2 and a crossing at
+alpha = 0.2. It differs from the singular graph Laplacian because the endpoint
+penalties prevent constant vectors from having zero energy.
 
 **Table 5 reproduces qualitatively, not numerically.** The sampling scheme
 behind the published table was not recorded, so this repository fixes its own:
