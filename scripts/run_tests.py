@@ -1,9 +1,9 @@
 """Run multiple random SDP relaxation instances and collect results.
 
 This script:
-  1. Generates a random (Q,c) instance via `generate_random_instance`.
+  1. Generates a random (Q,c) instance via `generate_instance`.
   2. Solves the QP to optimality with Gurobi.
-  3. Builds and solves the SDP relaxation using `build_and_solve_sdp`.
+  3. Builds and solves the SDP relaxation using `solve_sdp`.
   4. Computes the primal-dual relative gap for each instance.
   5. Creates a density plot of relative gaps on log scale.
   6. Reports instances with gaps exceeding the threshold.
@@ -22,7 +22,7 @@ SRC_PATH = os.path.join(PROJECT_ROOT, "src")
 if SRC_PATH not in sys.path:
 	sys.path.append(SRC_PATH)
 
-from define_functions import generate_random_instance, build_and_solve_sdp
+from analysis_functions import generate_instance, solve_qp, solve_sdp
 from define_constants import tol_rel_gap
 import matplotlib.pyplot as plt
 
@@ -56,11 +56,15 @@ def run_many_instances(n_lower: int = 4, n_upper: int = 20, seeds = range(1, 100
 			npr.seed(seed)
 		# Randomly sample problem size
 		n = npr.randint(n_lower, n_upper + 1)
-		Qc, x_opt = generate_random_instance(n, seed=seed if reproducible else -99)
-
-		rel_gap = build_and_solve_sdp(
-			n=n, Qc=Qc, x_opt=x_opt
-		)
+		Qc, Q, c, _ = generate_instance(n, seed if reproducible else -99)
+		x_opt, pval = solve_qp(n, Q, c)
+		if x_opt is None:
+			continue
+		dval, _ = solve_sdp(n, Qc)
+		if dval is None:
+			continue
+		denom = max(1.0, abs(pval + dval) / 2.0)
+		rel_gap = (pval - dval) / denom
 
 		results[int(seed)] = {
 			"rel_gap": rel_gap,
@@ -122,4 +126,3 @@ if __name__ == "__main__":
 	for s in seeds:
 		if results[s]["rel_gap"] > threshold:
 			print(f"Seed {s}: gap={results[s]['rel_gap']:.3e}, n={results[s]['n']}")
-

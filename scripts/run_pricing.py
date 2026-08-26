@@ -16,7 +16,6 @@ Run:  python run_pricing.py
 
 import itertools
 import numpy as np
-import mosek.fusion as mf
 from mosek.fusion import Model, Domain, Expr, ObjectiveSense, Matrix
 
 # ---- Table 2 data ---------------------------------------------------------

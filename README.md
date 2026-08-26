@@ -21,8 +21,8 @@ what that script needs. Run everything from the `scripts/` directory.
 | Section 5.1 — 34,000 fixed-dimension instances, rank-one finding | `python run_structure_search.py` | Gurobi, Mosek |
 | Tables 2 and 3 — three-product pricing | `python run_pricing.py` | Mosek (Gurobi optional) |
 | Table 4 — stratified sampling allocation | `python run_allocation.py` | Mosek |
-| Figure 3 — worst-case subquantile *(see Known issues)* | `python run_laplacian.py --subquantile` | Mosek |
-| Table 5 — Laplacian energy percentage gap *(see Known issues)* | `python run_laplacian.py --energy` | Mosek |
+| Figure 3 — historical MATLAB grounded-path reproduction | `python run_laplacian.py` | Mosek |
+| Table 5 — Laplacian energy percentage gap *(see Known issues)* | `python run_laplacian.py --energy` | Mosek; writes `results/table5.csv` and `results/table5_raw.csv` |
 | Example 4, Proposition 12, Table 6 — the counterexample | `python verify_counterexample.py` | Mosek |
 | — its exact half alone, no solver | `python verify_counterexample.py --exact` | none |
 | Figure 4 — the counterexample projected | `python gap_figure2.py --outbase ../results/gap_projection2` | cvxpy + Clarabel |
@@ -49,23 +49,20 @@ Every randomized experiment is seeded and deterministic:
 
 ## Known issues
 
-**Figure 3 does not currently reproduce.** `run_laplacian.py --subquantile`
-returns a worst-case subquantile of 0 for both ambiguity sets at every
-$\alpha$, rather than the two crossing curves the paper plots. The reason
-appears to be structural rather than a coding error. The Laplacian satisfies
-$Le = 0$, so constant vectors have zero energy, and with $\mu,\Sigma$ set to
-the first two moments of the independent uniform vector on $[0,1]^n$ both
-relaxed ambiguity sets admit a distribution whose energy vanishes identically:
+**Figure 3 is reproducible with its supplied MATLAB inputs.** Run
+`python run_laplacian.py` to use the matrix and
+moments constructed by Karthik's `cmmmoments.m`. The moments are the stated
+independent-uniform moments, but the path matrix has diagonal 2 at both
+endpoints. Equivalently, it is the standard path Laplacian plus unit penalties
+on the first and last coordinates:
 
-- under $\mathcal{Q}$, the point mass at $\xi = e/2$, since
-  $\Sigma - \tfrac14 ee^T = \tfrac1{12} I \succeq 0$;
-- under $\mathcal{P}$, the perfectly correlated $\xi = t\,e$ with
-  $\mathbb{E}[t] = 1/2$ and $\mathbb{E}[t^2] = 1/3$, which meets the diagonal
-  moments exactly and has $\mathbb{E}[\xi_i \xi_j] = 1/3 \ge 1/4 = \Sigma_{ij}$.
+`xi' L_code xi = sum_edges (xi_i-xi_j)^2 + xi_1^2 + xi_n^2`.
 
-Both are excluded by $\mathcal{R}$, which fixes $\mathbb{E}[\xi\xi^T] = \Sigma$
-exactly, but readmitted by the relaxations. Either the figure used different
-data than the text describes, or it plots a different quantity. Unresolved.
+This grounded path explains the archived intercepts P = 2/3 and Q = 1/2 and
+the crossing at alpha = 0.2. It is not the standard graph Laplacian currently
+described in the paper; the promoted script records the historical computation
+explicitly rather than silently presenting the degenerate standard-Laplacian
+result.
 
 **Table 5 reproduces qualitatively, not numerically.** The sampling scheme
 behind the published table was not recorded, so this repository fixes its own:
@@ -75,15 +72,19 @@ $u_i \sim U(0,1)$, which satisfies Lemma 3. With `--seed 1`:
 |  | path | star | complete |
 | --- | --- | --- | --- |
 | $n = 2$ | 0.000 (0.000) | 0.000 (0.000) | 0.000 (0.000) |
-| $n = 10$ | 0.599 (0.993) | 1.381 (2.508) | 1.771 (1.176) |
-| $n = 20$ | 0.619 (0.595) | 1.752 (2.282) | 2.162 (0.757) |
-| $n = 50$ | 0.649 (0.339) | 2.010 (2.198) | 2.328 (0.503) |
+| $n = 10$ | 0.658 (0.774) | 1.198 (1.697) | 1.782 (1.056) |
+| $n = 20$ | 0.632 (0.591) | 1.406 (1.997) | 2.159 (0.752) |
+| $n = 50$ | 0.650 (0.401) | 1.888 (2.034) | 2.314 (0.433) |
 
 Both claims the text draws from the table hold: the gap grows with $n$, and it
 is largest for the complete graph, then the star, then the path. The complete
 graph agrees closely with the published numbers; the path and star run higher,
 which is what one would expect from a different marginal sampling scheme, since
 those graphs have far fewer edges to average over.
+
+The default Table 5 run uses `--seed 1` and saves the twelve summary cells to
+`results/table5.csv`. The complete seeded observations are saved to
+`results/table5_raw.csv`; use `--energy-outbase` to choose another output base.
 
 ## Requirements
 
@@ -100,15 +101,14 @@ Nothing beyond NumPy is needed for `verify_counterexample.py --exact`.
 ```
 src/
   define_constants.py       tolerances
-  define_functions.py       instance generation, QP and SDP solves
-  analysis_functions.py     extended solve returning Y; rank and active-set analysis
+  analysis_functions.py     shared instance generation, solves, and structural analysis
 scripts/
   run_tests.py              Figure 2
   run_structure_search.py   Section 5.1 fixed-dimension search
   run_sparsity.py           Conclusions sparsity remark
   run_pricing.py            Tables 2 and 3
   run_allocation.py         Table 4
-  run_laplacian.py          Figure 3 and Table 5
+  run_laplacian.py          Figure 3 reproduction and Table 5
   verify_counterexample.py  Example 4, Proposition 12, Table 6
   counterexample_numerics.py  the Mosek half of the above
   tightness_figure.py       Figure 1
@@ -116,7 +116,9 @@ scripts/
 results/
   tightness_projection.pdf/.png
   rel_gap_distribution.png
-  bounds1.png
+  bounds1.csv/.pdf/.png
+  table5.csv
+  table5_raw.csv
   gap_projection2.pdf/.png
 ```
 

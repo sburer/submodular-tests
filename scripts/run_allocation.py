@@ -28,7 +28,6 @@ Run:  python run_allocation.py            (full enumeration, 812 SDPs)
 
 import argparse
 import numpy as np
-import mosek.fusion as mf
 from mosek.fusion import Model, Domain, Expr, ObjectiveSense, Matrix
 
 MU = np.array([0.5, 0.5, 0.5])

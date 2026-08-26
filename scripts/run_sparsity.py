@@ -23,7 +23,7 @@ SRC_PATH = os.path.join(PROJECT_ROOT, "src")
 if SRC_PATH not in sys.path:
     sys.path.append(SRC_PATH)
 
-from analysis_functions import generate_instance, solve_qp, solve_sdp, numerical_rank
+from analysis_functions import generate_instance, solve_qp, solve_sdp
 
 
 def keep_mask(Q, n):

@@ -12,7 +12,6 @@ from fractions import Fraction as F
 from itertools import combinations
 
 import numpy as np
-import mosek.fusion as mf
 from mosek.fusion import Model, Domain, Expr, ObjectiveSense, Matrix
 
 from verify_counterexample import Q_INT, C_INT, N

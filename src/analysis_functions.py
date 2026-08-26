@@ -1,7 +1,7 @@
 """Extended construction/solution routines used by the structural and sparsity
 studies reported in the paper's numerical section.
 
-These build on define_functions.py but additionally
+These provide the shared instance-generation and QP/SDP routines, and also
   - return the primal SDP solution matrix Y (needed for rank / active-set
     analysis), and
   - allow imposing only a selected subset of the RLT upper-bound constraints
@@ -52,7 +52,8 @@ GAP_TOL = 1.0e-4    # relative gap above which an instance is a possible counter
 
 def generate_instance(n, seed, density=1.0):
     """Random submodular (Q,c); density<1.0 yields a sparse Q."""
-    npr.seed(seed)
+    if seed != -99:
+        npr.seed(seed)
     Q = npr.standard_normal((n, n))
     Q = 0.5 * (Q + Q.T)
     mask = np.ones((n, n))
