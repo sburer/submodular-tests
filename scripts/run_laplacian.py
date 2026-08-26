@@ -271,7 +271,7 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=50)
     parser.add_argument("--energy", action="store_true", help="run the Table 5 energy experiment")
     parser.add_argument("--sizes", type=int, nargs="+", default=[2, 10, 20, 50])
-    parser.add_argument("--reps", type=int, default=100)
+    parser.add_argument("--reps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--energy-outbase", type=Path, default=Path("../results/table5"))
     parser.add_argument("--alphas", type=float, nargs="+", default=None)
